@@ -28,9 +28,9 @@ Sheng Zhang
   - Android进程间调用层
 - Media Server **媒体服务层** *provided by Google*
   - Android媒体服务框架层
-- HAL **硬件抽象层** *provided by vendor*
+- HAL **硬件抽象层** *provided by **vendor***
   - Android调用驱动硬件的抽象层
-- Linux Kernel **内核驱动程序** *provided by silicon vendors*
+- Linux Kernel **内核驱动程序** *provided by **silicon vendors***
   - 硬件驱动程序
 
 ​	
@@ -67,7 +67,7 @@ Sheng Zhang
 
 ### Linux sound
 
-​	在本文的聚焦的音频中，Linux目前的主要框架为[**ALSA**(*Advanced Linux Sound Architecture*)](https://www.alsa-project.org/wiki/Main_Page)，其中的Advanced是针对其前身的**OSS**而言的（具体Advanced在哪儿，暂时没有并未查到相关资料）。**ALSA**框架主要分为下面三个方面：
+​	在本文的聚焦的音频中，Linux目前的主要框架为[**ALSA**(*Advanced Linux Sound Architecture*)](https://www.alsa-project.org/wiki/Main_Page)，其中的Advanced是针对其前身的**OSS**而言的（具体Advanced在哪儿，暂时没有并未查到相关资料，似乎是OSS user space的崩溃有概率导致kernel space的崩溃，具体如何崩溃的未知）。**ALSA**框架主要分为下面三个方面：
 
 - **User-Level Alsa-lib**：为应用程序提供调用ALSA Core的调用接口，如`pcm_open`、`pcm_write`用于打开pcm设备，并对该设备进行写操作（**ALSA维护者维护**）
 - **ALSA/ASoC-Core** 为ALSA lib提供符合Linux操作系统规范的接口，用以调用底层驱动（**ALSA维护者维护**）

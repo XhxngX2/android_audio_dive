@@ -1,12 +1,11 @@
 # Android Audio HAL
 
-​	Android HAL在android 开发中占据着重要地位，尤其是android硬件厂商，与硬件相关的部分主要是：
+​	Android HAL在android 开发中占据着重要地位，尤其是android硬件厂商，HAL是Android与Linux抽象分割的中间层，HAL的引入使得我们可以在android层抽象地调用硬件，将硬件操作交给Linux Kernel去完成。Linux与音频硬件相关的部分主要是：
 
-- Linux driver
-- Android HAL
-- Tiny ALSA
+- Linux ALSA driver
+- tiny alsa
 
-​	由于一些开源代码协议的传染性，导致如果没有一层中间层代码，那么所有运用到开源驱动的Android相关的代码也将被迫开源。一方面为了解决开源证书的问题，另一方面为了统一底层提供给应用层的接口，Android引入了HAL层。
+​	由于Android的硬件驱动设备种类繁多，如果没有一层抽象接口，那么必然导致上层代码开发人员需要耗费大量的精力去厘清下层的所有逻辑，这些精力通常来说是不必要的，软件工程中完全可以通过中间层整合所有底层的接口，为上层提炼出统一的接口，以供调用。HAL的引入便为所有的上层native层，提供了统一的底层调用接口。并且，HAL层属于对于Linux Kernel的二次开发，Linux Kernel由于一些开源代码协议的传染性，导致如果没有一层中间层代码，那么所有运用到开源驱动的Android相关的代码也将被迫开源。HAL的引入一方面为了统一底层提供给应用层的接口，另一方面解决开源证书的问题。
 
 ​	Android Audio HAL 本质上是满足android HAL接口要求的Tiny ALSA应用层中间接口。`HAL`+`Audio Flinger`+`Audio Policy Service`+`Audio Track`+`Audio Recorder`组成了整个完整的`Tiny ALSA`应用接口。
 
@@ -18,22 +17,37 @@
 
 ​		由于Android是个复杂环境，音频的音源类别有所不同（铃声、电话、音乐、提示音），而音频的播放设备也有所不同（内置喇叭、蓝牙耳机、3.5mm耳机接口）。所以音频子系统，将播放的需求分为两部分：
 
-1. 用何种音频播放设备，各种播放设备的音频数据关系
-2. 如何设置对应某个播放设备的状态
+1. 什么时候用何种音频播放设备
+2. 音频播放设备如何处理数据请求
 
-​	由于需要解决上述的音频的策略和执行两部分，并且在HAL层均为其预备了两个hw_module（default 源码位于hardware/libhardware/audio) ，其MODULE_ID 分别为：
+​	
+
+​	上述的音频需求可以抽象为策略和执行两部分，在Android的HAL层中，为其预备了两个hw_module（default 源码位于hardware/libhardware/audio) ，其MODULE_ID 分别为：
 
 - AUDIO_POLICY_HARDWARE_MODULE_ID
 
 - AUDIO_HARDWARE_MODULE_ID
 
-  下面将从HAL展开，进而对Hardware Module与Policy Module进行介绍。
+  
+  
+  上面两个均为HAL的关于下面将从HAL展开，进而对Hardware Module与Policy Module进行介绍。
 
 
 
 ### HAL
 
-HAL层的数据结构，通常都是继承自`hw_module_t`和 `hw_device_t`，其关系如下图所示：
+​	HAL的分析，我们主要从以下几个方面展开（此处只分析Audio相关的部分，其他功能也雷同）：
+
+- HAL是什么（这部分在之前的前言和本文的前几章已着重说明）
+- HAL的数据结构是怎样的 （这是分析HAL的基础，分析数据结构，从一些方面也侧面分析了功能）
+- HAL能干什么 （HAL的主要功能的实现）
+- HAL怎么被调用的 （如果光定义不调用，那么代码永远都不会生效）
+
+​	
+
+#### HAL的数据结构
+
+​	HAL层的数据结构，继承自`hw_module_t`和 `hw_device_t`，其关系如下图所示，值得注意的是`hw_device_t`中包含一个`hw_module_t`的指针。这意味着，一个`hw_module_t`可以对应打开多个`hw_deivce_t`（并且`hw_module_t`还可以对应不同`version`、`tag`的`hw_device_t`），`hw_device_t`的`close`函数指针也印证了这一点。
 
 ```mermaid
 classDiagram
@@ -67,7 +81,199 @@ typedef struct hw_module_methods_t {
 } hw_module_methods_t;
 ```
 
-​	其他的所有HAL元素包括下文中的Hardware Module和Policy Module，均派生自这两个基本数据结构。由于此部分都是以c语言为主，所以继承关系用结构体包含来实现，要求派生的数据类型，第一个元素必须是继承的元素，以保证指针强转的正确性。HAL层中很多都是这样的强行规定，主要是为了HAL层接口函数的统一。
+​	其他的所有HAL元素包括下文中的Hardware Module和Policy Module，均派生自这两个基本数据结构。由于此部分都是以c语言为主，所以继承关系用结构体包含来实现，要求派生的数据类型，第一个元素必须是继承的元素，以保证指针强转的正确性。HAL层中很多都是这样的强行规定，主要是为了HAL层接口函数的统一。以我们关心的音频`device`数据结构`audio_policy_device`与`audio_hw_device`其数据结构分别为：
+
+```mermaid
+classDiagram
+class audio_hw_device{
+     hw_device_t common;
+     (*get_supported_devices)( ...);
+     (*init_check)( ...);
+     (*set_voice_volume)(  ...);
+     (*set_master_volume)( ...);
+     (*get_master_volume)( ...);
+     (*set_mode)( ...);
+     (*set_mic_mute)( ...);
+     (*get_mic_mute)( ...);
+     (*set_parameters)(  ...);
+    (*get_parameters)( ...);
+     (*get_input_buffer_size)( ...);
+     (*open_output_stream)(  ...);
+
+     (*close_output_stream)( ...);
+     (*open_input_stream)(  ...);
+
+     (*close_input_stream)( ...);
+     (*get_microphones)( ...);
+
+     (*dump)( ...);
+
+ 
+     (*set_master_mute)( ...);
+
+
+     (*get_master_mute)( ...);
+
+
+ 
+    (*create_audio_patch)(  ...);
+
+     (*release_audio_patch)( ...);
+
+
+     (*get_audio_port)( ...);
+
+     (*set_audio_port_config)( ...);
+
+}
+
+
+class audio_policy_device {
+    hw_device_t common;
+
+    (*create_audio_policy)( ...);
+
+    (*destroy_audio_policy)( ...);
+}
+
+class audio_policy {
+     (*set_device_connection_state)(...);
+
+     (...);
+
+
+     (*set_phone_state)(...);
+
+     (*set_ringer_mode)(...);
+
+
+     (*set_force_use)(...);
+
+
+    (*get_force_use)(...);
+
+
+     (*set_can_mute_enforced_audible)(...);
+
+     (*init_check)(...);
+
+     (*get_output)(...);
+
+
+     (*start_output)(...);
+
+
+     (*stop_output)(...);
+
+     (*release_output)(...);
+
+
+     (*get_input)(...);
+
+     (*start_input)(...);
+
+    
+     (*stop_input)(...);
+
+     (*release_input)(...);
+
+
+
+     (*init_stream_volume)(...);
+
+
+     (*set_stream_volume_index)(...);
+
+     (*get_stream_volume_index)(...);
+
+  
+     (*set_stream_volume_index_for_device)(...);
+
+
+     (*get_stream_volume_index_for_device)(...);
+
+     (*get_strategy_for_stream)(...);
+
+     (*get_devices_for_stream)(...);
+
+     (*get_output_for_effect)(...);
+
+     (*register_effect)(...);
+
+     (*unregister_effect)(...);
+
+     (*set_effect_enabled)(...);
+
+     (*is_stream_active)(...);
+
+     (*is_stream_active_remotely)(...);
+
+     (*is_source_active)(...);
+
+     (*dump)(...);
+
+     (*is_offload_supported)(...);
+}
+
+
+class audio_policy_service_ops {
+     (*open_output)(...);
+
+     (*open_duplicate_output)(...);
+	 (*close_output)(...);
+	(*suspend_output)(...);
+	(*restore_output)(...);
+	(*open_input)(...);
+
+     (*close_input)(...);
+
+ 
+     (*set_stream_volume)(...);
+
+     (*invalidate_stream)(...);
+
+     (*set_parameters)(...);
+
+   
+
+     (*get_parameters)(...);
+
+  
+     (*start_tone)(...);
+
+     (*stop_tone)(...);
+
+     (*set_voice_volume)(...);
+
+     (*move_effects)(...);
+
+    
+     (*open_output_on_module)(...);
+
+ 
+     (*open_input_on_module)(...);
+
+}
+
+audio_policy <-- audio_policy_device
+audio_policy_service_ops<-- audio_policy_device
+
+```
+
+​	有上述的分析可知 `hw_device_t`均由`hw_module_t`打开，所以在上述的两个数据结构的头文件中，均含有对应的`module_t`数据结构：
+
+```c
+typedef struct audio_policy_module {
+    struct hw_module_t common;
+} audio_policy_module_t;
+
+
+struct audio_module {
+    struct hw_module_t common;
+};
+```
+
+
 
 
 
