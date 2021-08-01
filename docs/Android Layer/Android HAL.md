@@ -1,6 +1,6 @@
 # Android Audio HAL
 
-​	Android HAL在android 开发中占据着重要地位，尤其是android硬件厂商，HAL是Android与Linux抽象分割的中间层，HAL的引入使得我们可以在android层抽象地调用硬件，将硬件操作交给Linux Kernel去完成。Linux与音频硬件相关的部分主要是：
+​	Android HAL在android 开发中占据着重要地位，尤其是android硬件厂商。HAL是Android与Linux抽象分割的中间层，HAL的引入使得我们可以在android层抽象地调用硬件，将硬件操作交给Linux Kernel去完成。Linux与音频硬件相关的部分主要是：
 
 - Linux ALSA driver
 - tiny alsa
@@ -30,11 +30,11 @@
 
   
   
-  上面两个均为HAL的关于下面将从HAL展开，进而对Hardware Module与Policy Module进行介绍。
+  下面将从HAL展开，进而对Hardware Module与Policy Module进行介绍。
 
 
 
-### HAL
+## HAL
 
 ​	HAL的分析，我们主要从以下几个方面展开（此处只分析Audio相关的部分，其他功能也雷同）：
 
@@ -45,7 +45,7 @@
 
 ​	
 
-#### HAL的数据结构
+### HAL的数据结构
 
 ​	HAL层的数据结构，继承自`hw_module_t`和 `hw_device_t`，其关系如下图所示，值得注意的是`hw_device_t`中包含一个`hw_module_t`的指针。这意味着，一个`hw_module_t`可以对应打开多个`hw_deivce_t`（并且`hw_module_t`还可以对应不同`version`、`tag`的`hw_device_t`），`hw_device_t`的`close`函数指针也印证了这一点。
 
@@ -255,12 +255,62 @@ class audio_policy_service_ops {
 
 }
 
+class audio_stream_out {
+
+     audio_stream common;
+    (*get_latency)(...);
+     (*set_volume)(...);
+     (*get_render_position)(...);
+     (*get_next_write_timestamp)(...);
+     (*set_callback)(...);
+     (*resume)(...);
+    (*flush)(...);
+     (*get_presentation_position)(...);
+     (*start)(...);
+     (*stop)(...);
+     (*create_mmap_buffer)(...);
+     (*get_mmap_position)(...);
+     (*update_source_metadata)(...);
+}
+
+class audio_stream {
+     (*get_sample_rate)(...);
+     (*set_sample_rate)(...);
+     (*get_buffer_size)(...);
+     (*get_channels)(...);
+     (*get_format)(...);
+     (*set_format)(...);
+     (*standby)(...);
+     (*dump)(...);
+     (*get_device)(...);
+     (*set_device)(...);
+     * (*get_parameters)(...);
+     (*add_audio_effect)(...);
+     (*remove_audio_effect)(...);
+}
+
+class audio_stream_in {
+    struct audio_stream common;
+     (*set_gain)(...);
+     (*read)(...);
+     (*get_input_frames_lost)(...);
+     (*get_capture_position)(...);
+     (*start)(...);
+     (*stop)(...);
+     (*create_mmap_buffer)(...);
+     (*get_active_microphones)(...);
+     (*update_sink_metadata)(...);
+}
+audio_stream <-- audio_stream_in
+audio_stream <-- audio_stream_out
+audio_stream_out <-- audio_hw_device
+audio_stream_in <-- audio_hw_device
 audio_policy <-- audio_policy_device
 audio_policy_service_ops<-- audio_policy_device
 
 ```
 
-​	有上述的分析可知 `hw_device_t`均由`hw_module_t`打开，所以在上述的两个数据结构的头文件中，均含有对应的`module_t`数据结构：
+​	有上述的分析可知 `hw_device_t`均由`hw_module_t`打开，所以在上述的两个数据结构的头文件中(`hardware\libhardware\include\hardware\audio.h \audio_policy.h`)，均含有对应的`module_t`数据结构：
 
 ```c
 typedef struct audio_policy_module {
@@ -275,115 +325,28 @@ struct audio_module {
 
 
 
+### Audio HAL的功能分析
 
+​	这里着重分析Audio相关的HAL层的主要对象：`aduio_policy`和`audio_hw_device`、其余非音频的HAL层对象不在此文章的讨论范围内。
 
-### Hardware Module (HAL)
+​	由于HAL层数据结构的实现，体现了对于Linux Kernel的最底层的调用。对于audio而言，`aduio_policy`和`audio_hw_device`体现了Android 对于`tiny alsa `接口的直接调用。
 
-​	此层顾名思义，主要涉及与硬件强相关的HAL部分。通常来说hardware module中主要涉及对两种数据类型的操作，一类是`audio_hw_device`，一类是`audio_stream`，分别对应为device和device的操作对象。
+​	观察上文中的数据结构可以观察到：
 
-​	
-
-#### audio_hw_device
-
-​	`audio_hw_device`的主要数据结构如下图所示，其中需要继承并且实现的函数指针主要涉及设备的打开、查询、设置设备状态等。
-
-```mermaid
-classDiagram
-class audio_hw_device{
-+ hw_device_t common
-+ .. *get_supported_devices(...)
-+ .. *init_check(...)
-+ .. *set_voice_volume(...)
-+ .. *set_master_volume(...)
-+ .. *get_master_volume(...)
-+ .. *set_mode(...)
-+ .. *set_mic_mute(...)
-+ .. *get_mic_mute(...)
-+ .. *set_parameters(...)
-+ .. *get_parameters(...)
-+ .. *get_input_buffer_size(...)
-+ .. *open_output_stream(...)
-+ .. *close_output_stream(...)
-+ .. *open_input_stream(...)
-+ .. *close_input_stream(...)
-+ .. *get_microphones(...)
-+ .. *dump(...)
-+ .. *set_master_mute(...)
-+ .. *get_master_mute(...)
-+ .. *create_audio_patc(...)
-+ .. *release_audio_patch(...)
-+ .. *get_audio_port(...)
-+ .. *set_audio_port_config(...)
-}
-
-```
+- `audio_policy`的直接作用对象为`audio_device`或`audio_io_handle_t`，其中`audio_io_handle_t`即为 io thread的线程id。
+- `audio_hw_device`的直接作用对象为`stream`（`stream_in`与`stream_out`)。
 
 
 
-#### audio_stream	
+#### 例、audio_policy_device start_output
 
-​	对于audio部分来说，针对audio的主要数据结构基础类是`audio_stream`，对于播放和录音流分别派生了`audio_stream_out`和`audio_stream_in`两个数据类型，其中需要继承并且实现的函数指针主要涉及采样率、数据格式、音效等的设置。
+​	目前的i.mx8mm板子源代码缺失这部分，后续
 
-```mermaid
-classDiagram
 
-audio_stream <|--audio_stream_out
-audio_stream <|--audio_stream_in
 
-class audio_stream{
-	+ .. *get_sample_rate(...)
-	+ .. *set_sample_rate(...)
-	+ .. *get_buffer_size (...)
-	+ .. *get_channels (...)
-	+ .. *get_format (...)
-	+ .. *set_format (...)
-	+ .. *standby (...)
-	+ .. *dump (...)
-	+ .. *get_device (...)
-	+ .. *set_device (...)
-	+ .. *set_parameters (...)
-	+ .. *get_parameters (...)
-	+ .. *add_audio_effect (...)
-	+ .. *remove_audio_effect (...)
-}
+#### 例、audio_hw_device open_output_stream
 
-class audio_stream_out{
-	+ audio_stream common
-	+ .. *get_latency(...)
-	+ .. *set_volume(...)
-	+ .. *write(...)
-	+ .. *get_render_position(...)
-	+ .. *get_next_write_timestamp(...)
-	+ .. *set_callback(...)
-	+ .. *pause(...)
-	+ .. *resume(...)
-	+ .. *drain(...)
-	+ .. *flush(...)
-	+ .. *get_presentation_position(...)
-	+ .. *start(...)
-	+ .. *create_mmap_buffer(...)
-	+ .. *get_mmap_position(...)
-	+ .. *update_source_metadata(...)
-}
-
-class audio_stream_in{
-	+ audio_stream common
-	+ .. *set_gain(...)
-	+ .. *read(...)
-	+ .. *get_input_frames_lost(...)
-	+ .. *get_capture_position(...)
-	+ .. *start(...)
-	+ .. *stop(...)
-	+ .. *create_mmap_buffer(...)
-	+ .. *get_mmap_position
-	+ .. *get_active_microphones(...)
-	+ .. *update_sink_metadata(...)
-}
-```
-
-#### 	adev_open_output_stream
-
-​	封装后的Hardware Module HAL对Linux Kernel的操作主要涉及stream的操作，以imx8mm板子为例（vendor/nxp-opensource/imx/alsa/tinyalsa_hal.c），其open stream函数如下，该函数主要：
+​	目前的i.mx8mm板子源代码中对于`open_output_stream`的实现为`adev_open_output_stream`,其函数如下，该函数主要：
 
 - 创建了stream_out的结构体，分配了内存。
 - 根据传入的flag，对stream_out进行初始化，制定了上述stream所需要的函数指针。
@@ -444,9 +407,7 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
 }
 ```
 
-#### out->stream.write = out_write_primary
-
-out是stream_out中一个重要的函数，其在imx8mm板中Hal层实现如下，此函数主要：
+当上层调用主设备写函数时，其在imx8mm板中Hal层实现为`out_write_primary`，如下所示此函数主要：
 
 - 对函数主体上锁
 - 初始化stream_out结构体（start_output_stream_primary）
@@ -511,141 +472,9 @@ static ssize_t out_write_primary(struct audio_stream_out *stream, const void* bu
 
 
 
+#### 例、audio_hw_device start_input_stream的时序
 
-
-### Policy Module (HAL)
-
-  音频策略的实现，有相当一部分的工作也需要通过操作硬件完成。通常来说Policy Module中同样主要涉及对两种数据类型的操作，一类是设备，一类是设备操作的数据类型。在Policy Module中主要为`audio_policy_device`与`audio_policy`。
-
-
-
-#### audio_policy_device
-
-​	`audio_policy_device`的数据结构如下图所示，主要涉及主体结构`audio_policy`的创建和销毁。
-
-```mermaid
-classDiagram
-class audio_policy_device{
-	hw_device_t common
-	+ .. create_audio_policy(...)
-	+ .. destroy_audio_policy(...)
-}
-```
-​	其中在`creat_audio_policy`函数中还涉及另一个结构体`audio_policy_service_ops`。
-
-```c
-int (*create_audio_policy)(const struct audio_policy_device *device,
-                           struct audio_policy_service_ops *aps_ops,
-                           void *service,
-                           struct audio_policy **ap);
-```
-
-​	`audio_policy_service_ops`的结构体如下，其中主要包括设备的打开和关闭（此处与audio device进行对比）。
-- audio device 的直接操作对象为stream。
-- audio policy 的直接操作对象为audio device。
-```mermaid
-classDiagram
-class audio_policy_service_ops{
-+ .. *open_output(...)
-+ .. *open_duplicate_output(...)
-+ .. *close_output(...)
-+ .. *suspend_output(...)
-+ .. *restore_output(...)
-+ .. *open_input(...)
-+ .. *close_input(...)
-+ .. *set_stream_volume(...)
-+ .. *invalidate_stream(...)
-+ .. *set_parameters(...)
-+ .. *get_parameters(...)
-+ .. *start_tone(...)
-+ .. *stop_tone(...)
-+ .. *set_voice_volume(...)
-+ .. *move_effects(...)
-+ .. *load_hw_module(...)
-+ .. *open_output_on_module(...)
-+ .. *open_input_on_module(...)
-}
-```
-
-
-#### audio_policy
-
-​	`audio_policy`的数据结构如下，其中包含许多与audio policy很多同名的函数。
-
-```mermaid
-classDiagram
-class audio_policy{
-+ .. *set_device_connection_state(...)
-+ .. *get_device_connection_state(...)
-+ .. *set_phone_state(...)
-+ .. *set_ringer_mode(...)
-+ .. *set_force_use(...)
-+ .. *get_force_use(...)
-+ .. *set_can_mute_enforced_audible(...)
-+ .. *init_check(...)
-+ .. *get_output(...)
-+ .. *start_output(...)
-+ .. *stop_output(...)
-+ .. *release_output(...)
-+ .. *get_input(...)
-+ .. *start_input(...)
-+ .. *stop_input(...)
-+ .. *release_input(...)
-+ .. *init_stream_volume(...)
-+ .. *set_stream_volume_index(...)
-+ .. *get_stream_volume_index(...)
-+ .. *set_stream_volume_index_for_device(...)
-+ .. *get_stream_volume_index_for_device(...)
-+ .. *get_strategy_for_stream(...)
-+ .. *get_devices_for_stream(...)
-+ .. *get_output_for_effect(...)
-+ .. *register_effect(...)
-+ .. *unregister_effect(...)
-+ .. *set_effect_enabled(...)
-+ .. *is_stream_active(...)
-+ .. *is_stream_active_remotely(...)
-+ .. *is_source_active(...)
-+ .. *dump(...)
-+ .. *is_offload_supported(...)
-}
-```
-
-​	总结一下，如果需要对audio设备进行HAL层的适配，那么主要涉及两个device的设置，配置其中的各个函数指针。
-
-- audio device
-  - 主要涉及stream的操作
-  - Linux aSoC driver的调用
-- audio policy device
-  - 主要涉及device的启动
-  - force use策略等
-
-
-
-## Audio HAL 的内存初始化
-
-​	通过上述的分析，两个HAL层的组件，均向下包含了，Linux ASoC驱动的读写策略。并且向上提供了Android HAL的统一读写接口，这一节主要讨论Audio HAL的载入。	
-
-​	HAL层的函数编译完成后，都是生成一个形如：`audio.primary.so`这样的文件存在系统的文件系统中。当调用AudioFlinger的函数`loadHWModule`时，函数分析这个so文件中文件的**HAL_MODULE_INFO_SYM**（HMI）对应的数据结构，此结构即为:`audio_module`。
-
-```c
-struct audio_module HAL_MODULE_INFO_SYM = {
-    .common = {
-        .tag = HARDWARE_MODULE_TAG,
-        .module_api_version = AUDIO_MODULE_API_VERSION_0_1,
-        .hal_api_version = HARDWARE_HAL_API_VERSION,
-        .id = AUDIO_HARDWARE_MODULE_ID,
-        .name = "NXP i.MX Audio HW HAL",
-        .author = "The Android Open Source Project",
-        .methods = &hal_module_methods,
-    },
-};
-```
-
-​	而载入的文件名的解析，如`audio.primary.so`，`audio.usb.so`则是audio policy通过解析，`audio_policy_configuration.xml`来获得的。具体的分析将在AudioFlinger与Audio Policy中分析，概括来说，HAL层只需要根据Android HAL层的策略，对Linux Kernel层进行封装即可，具体的调用，则完全由它的调用层，AudioFlinger与Audio Policy决定。
-
-
-
-### HAL start_input_stream
+​	`stream_in` 与 `stream_out`由于数据类型基本一致，只是数据的方向不同，所以基本的数据初始化方式均一致。上面以源码的方式列出了output stream的`初始化函数`与`主设备写函数`，下面从时序图的角度，列出了输入设备的打开，与输入设备的读取。希望结合`tinn_alsa_hal.c`源代码一起分析。
 
 ```mermaid
 sequenceDiagram
@@ -713,4 +542,32 @@ deactivate s4
 
 deactivate s1
 ```
+
+
+
+
+
+### Audio HAL 的内存初始化（HIDL的lagacy方法）
+
+​	通过上述的分析，两个HAL层的组件，均向下包含了，Linux ASoC驱动的读写策略。并且向上提供了Android HAL的统一读写接口，这一节主要讨论Audio HAL的载入。	
+
+​	HAL层的函数编译完成后，都是生成一个形如：`audio.primary.so`这样的文件存在系统的文件系统中。当调用AudioFlinger的函数`loadHWModule`时，函数分析这个so文件中文件的**HAL_MODULE_INFO_SYM**（HMI）对应的数据结构，此结构即为:`audio_module`。
+
+```c
+struct audio_module HAL_MODULE_INFO_SYM = {
+    .common = {
+        .tag = HARDWARE_MODULE_TAG,
+        .module_api_version = AUDIO_MODULE_API_VERSION_0_1,
+        .hal_api_version = HARDWARE_HAL_API_VERSION,
+        .id = AUDIO_HARDWARE_MODULE_ID,
+        .name = "NXP i.MX Audio HW HAL",
+        .author = "The Android Open Source Project",
+        .methods = &hal_module_methods,
+    },
+};
+```
+
+​	而载入的文件名的解析，如`audio.primary.so`，`audio.usb.so`则是audio policy通过解析，`audio_policy_configuration.xml`来获得的。具体的分析将在AudioFlinger与Audio Policy中分析，概括来说，HAL层只需要根据Android HAL层的策略，对Linux Kernel层进行封装即可，具体的调用，则完全由它的调用层，AudioFlinger与Audio Policy决定。
+
+
 
