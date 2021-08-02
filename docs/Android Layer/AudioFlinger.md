@@ -1,179 +1,20 @@
 # AudioFlinger
 
-​	Android Audio Flinger Service与Audio Policy Service是Android应用的基石，作为Media Server的一部分，对下调用Audio HAL层，完成对硬件的访问，对上，通过Binder IPC给Native Framework提供接口。
-
-​	在Media Server层，Audio Flinger与Audio Policy并未完全解耦，所以需要分析AudioFlinger的整个流程需要结合Audio Policy一起分析。
-
-​	另外，Audio Flinger通过`Binder`向上提供访问接口。`Binder`部分，会在Linux Binder驱动部分介绍。
-
-
+​	`Audio Flinger Service`与`Audio Policy Service`是android audio的基石，作为`Media Server`的一部分，AF与AP对下调用Audio HAL层，完成对硬件的访问，对上，通过Binder IPC给Native Framework提供接口。在`Media Server`层，AF与APolicy虽然解耦，但是对于audio这个功能而言，却还是需要两个组件共同作用才能完成。此小章主要介绍AF。
 
 ## audioflinger
 
-audioflinger为android framework的一部分，文件位于源码/framework/services/audioflinger中，主要包括：
+`audioflinger`为android framework的一部分，文件位于源码`/framework/services/audioflinger`中，主要包括：
 
-- AudioFlinger/AudioHwDevice/AudioStreamOut
-- AudioWatchDog
-- Effects
-- FastCapture
-- FastMixer
-- PatchPanel
+- AudioFlinger.cpp（audio flinger的主文件）
+- Threads.cpp (audio flinger主要最终需要创建一个个回放或采集的子线程)
+- Tracks.cpp (audio flinger主要针对的结构体对象)
 
-
-
-### AudioHwDevice/AudioStreamOut
-
-​	AudioFlinger.cpp是整个AudioFlinger service的核心，`AudioHwDevice`与`AudioStreamOut`这两个结构在Android Audio HAL中也存在，但名字为`audio_hardware_device`与`audio_stream_out`。这里是在android namespace下对上述的两个结构进行了类封装。主要的数据与函数如下所示：
-
-```mermaid
-classDiagram
-AudioHwDevice <--DeviceHalInterface:smart pointer 
-AudioStreamOut <--DeviceHalInterface:smart pointer 
-AudioHwDevice <--StreamOutHalInterface:smart pointer 
-AudioStreamOut <--StreamOutHalInterface:smart pointer 
-class AudioHwDevice{
-	+... AudioHwDevice(...)
-  +... ~AudioHwDevice(...)
-  +... canSetMasterVolume(...)
-  +... canSetMasterMute(...)
-  +... handle(...)
-  +... moduleName(...)
-  +... hwDevice(...)
-  +... openOutputStream(...)
-  +... supportsAudioPatches(...)
-  -... mHandle
-  -... mModuleName
-  -... mHwDevice
-  -... mFlags
-}
-class AudioStreamOut{
-	+... audioHwDev
-	+... stream
-	+... flags
-	+... hwDev(...)
-	+... AudioStreamOut(...)
-	+... open(...)
-	+... ~AudioStreamOut(...)
-	+... getRenderPosition(...)
-	+... getPresentationPosition(...)
-	+... write(...)
-	+... getFrameSize(...)
-	+... getFormat(...)
-	+... getSampleRate(...)
-	+... getChannelMask(...)
-	+... flush(...)
-	+... standby(...)
-	#... mFramesWritten;
-  #... mFramesWrittenAtStandby;
-  #... mRenderPosition;
-  #... mRateMultiplier;
-  #... mHalFormatHasProportionalFrames;
-  #... mHalFrameSize;
-}
-class DeviceHalInterface{
-	+... getSupportedDevices(...)
-	+... initCheck(...)
-	+... setVoiceVolume(...)
-	+... setMasterVolume(...)
-	+... getMasterVolume(...)
-	+... setMode(...)
-	+... setMicMute(...)
-	+... getMicMute(...)
-	+... setMasterMute(...)
-	+... getMasterMute(...)
-	+... setParameters(...)
-	+... getParameters(...)
-	+... getInputBufferSize(...)
-	+... openOutputStream(...)
-	+... openInputStream(...)
-	+... supportsAudioPatches(...)
-	+... createAudioPatch(...)
-	+... releaseAudioPatch(...)
-	+... getAudioPort(...)
-	+... setAudioPortConfig(...)
-	+... getMicrophones(...)
-	+... dump(...)	
-	#... DeviceHalInterface()
-	#... ~DeviceHalInterface()
-}
-class StreamOutHalInterface{
-	+... getLatency(...)
-	+... setVolume(...)
-	+... write(...)
-	+... getRenderPosition(...)
-	+... getNextWriteTimestamp(...)
-	+... setCallback(...)
-	+... supportsPauseAndResume(...)
-	+... pause(...)
-	+... resume(...)
-	+... supportsDrain(...)
-	+... drain(...)
-	+... flush(...)
-	+... getPresentationPosition(...)
-	+... updateSourceMetadata(...)
-	#... ~StreamOutHalInterface()
-}
-
-```
-
-​	其中`DeviceHalInterface`为Audio Device HAL的接口，其所有的虚函数均与HAL中`audio_device_t`相同;同样的`StreamOutHalInterface`为Stream Out HAL的接口，其所有的虚函数均与HAL中的`stream_out_t`相同。（/framework/av/media/libaudiohal/include/media/audiohal）
-
-​	类比HAL层中，`audio_device_t`与`stream_out_t`两个结构体的函数指针，在`audio_device_t`中主要方法为`open_output_stream`与`open_input_stream`，而`stream_out_t`的方法为`out`。
-
-​	在HAL层中，device 的`open_output`、`open_input`方法在`audio_policy`中，而`audio_device`主要负责stream的open，即`open_output_stream`与`open_input_stream`。audio flinger中的接口类中的实现也基本相同，`AudioHwDevice`除了保留`DeviceHalInterface`指针中的`open_output_stream`外，类中也包含了同名函数。
-
-```c
-status_t AudioHwDevice::openOutputStream(
-        AudioStreamOut **ppStreamOut,
-        audio_io_handle_t handle,
-        audio_devices_t devices,
-        audio_output_flags_t flags,
-        struct audio_config *config,
-        const char *address)
-{
-
-    struct audio_config originalConfig = *config;
-    AudioStreamOut *outputStream = new AudioStreamOut(this, flags);
-    status_t status = outputStream->open(handle, devices, config, address);
-  	...
-    *ppStreamOut = outputStream;
-    return status;
-}
-
-```
-
-​	`AudioStreamOut`中的out函数为audioflinger层才加入的函数，主要为根据传入的参数，回调`AudioHwDevice`中的`openOutputStream`方法。
-
-```c++
-status_t AudioStreamOut::open(
-        audio_io_handle_t handle,
-        audio_devices_t devices,
-        struct audio_config *config,
-        const char *address)
-{
-    sp<StreamOutHalInterface> outStream;
-
-    audio_output_flags_t customFlags = (config->format == AUDIO_FORMAT_IEC61937)
-                ? (audio_output_flags_t)(flags | AUDIO_OUTPUT_FLAG_IEC958_NONAUDIO)
-                : flags;
-
-    int status = hwDev()->openOutputStream(
-            handle,
-            devices,
-            customFlags,
-            config,
-            address,
-            &outStream);
-}
-```
-
-
+在`Android P` 的audioflinger源码文件夹中，已经将`AudioStreamOut`分离为单独的文件头与cpp文件，而AudioStreamIn仍然在audioflinger的文件中。在可以预见的将来，Android 必然将AudioStreamIn也同样分离出来。
 
 ### AudioFlinger
 
 ​	AudioFlinger作为android底层server组件，通过binder为client组件提供访问，AudioFlinge公有继承自`BnAudioFlinger`与`BinderService`，其中`BinderService`为模版类。
-
-
 
 #### BnAudioFlinger
 
@@ -199,8 +40,6 @@ protected:
     virtual IBinder*            onAsBinder();
 };
 ```
-
-
 
 #### BinderService	
 
@@ -361,7 +200,7 @@ class IAudioRecord{
 
 ```
 
-### Audio Flinger的初始化
+## audio flinger的初始化
 
 ​	下为AudioFlinger的构造函数，可以看到，其基本上都是成员函数的初始化。其中：
 
@@ -433,7 +272,7 @@ void AudioFlinger::onFirstRef()
 
 
 
-### AudioFlinger::openOutput              
+## audioflinger::openOutput              
 
 ```mermaid
 sequenceDiagram
@@ -503,7 +342,9 @@ deactivate s1
 
 ```
 
-### AudioFlinger::mPlaybackThread
+
+
+## audioflinger::mPlaybackThread
 
 ​	上述`openOutput`函数运行后，直接的结果为创建了一个`PlaybackThread`对象（`MixerThread`或DirectOutputThread），该对象最终被添加到`mPlaybackThreads`(<audio_io_handle_t,sp<PlaybackThread>>)中。
 
@@ -722,9 +563,6 @@ bytesWritten = mOutput->write((char *)mSinkBuffer + offset, mBytesRemaining);
 
 
 
-### AudioFlinger::createTrack
+## audioflinger::createTrack
 
-​	在前面的章节中，openOutput`在audioFlinger`初始化后，进行了HAL层的初始化，并且初始化了其主要的结构体：playback或capture。
-
-​	但是playbackThread或者caputureThread的主要操作对象均为track。createTrack是一个IAudioFlinger 接口函数。放在binder接口中分析。
-
+​	在前面的章节中，openOutput`在audioFlinger`初始化后，进行了HAL层的初始化，并且初始化了其主要的结构体：playback或capture。但playbackThread或者caputureThread的主要操作对象均为track。
