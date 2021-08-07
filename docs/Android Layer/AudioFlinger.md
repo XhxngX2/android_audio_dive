@@ -322,6 +322,7 @@ s2->>s2:AudioHwDevice->openOutputStream
 note over s2:mHardwareStatus = AUDIO_HW_IDLE
 alt:flag
 s2->>s2:creat different output threads
+note over s2:MmapPlaybackThread\OffloadThread\DirectOutputThread\MixerThread
 note over s2:mPlaybackThreads.add(*output, thread)
 s2->>s1:thread
 end
@@ -530,8 +531,15 @@ int androidCreateRawThreadEtc(android_thread_func_t entryFunction,
 ```c++
 while (!exitPending()){
   ... status check and handling
-  mMixerStatus = prepareTracks_l(&tracksToRemove); //对tracks进行判断，删除不需要的tracks
-  lockEffectChains_l(effectChains);
+  mMixerStatus = prepareTracks_l(&tracksToRemove); //mixthread 方法，对tracks进行判断，删除不需要的tracks
+   if (mBytesRemaining == 0) {
+            mCurrentWriteLength = 0;
+            if (mMixerStatus == MIXER_TRACKS_READY) {
+                // threadLoop_mix() sets mCurrentWriteLength
+                threadLoop_mix();	//mix 混音
+            }
+   }
+   lockEffectChains_l(effectChains);
   ... //effect related stuff
    unlockEffectChains
    if (!waitingAsyncCallback()) {
@@ -553,7 +561,9 @@ while (!exitPending()){
 }
 ```
 
-​	`threadLoop_write`中主要函数为：
+**其中将所有track进行混音操作得是`audio mix	`,这是一个比较复杂的对象类型，感兴趣的可以自行从源码学习**，这是一个比较重要的结构体，用于mix所有的audio track对象。
+
+在mix完成后，`threadLoop_write`中主要函数为：
 
 ```c++
 bytesWritten = mOutput->write((char *)mSinkBuffer + offset, mBytesRemaining);
@@ -561,8 +571,188 @@ bytesWritten = mOutput->write((char *)mSinkBuffer + offset, mBytesRemaining);
 
 ​	`mOutput` 为PlaybackThread中的`AudioStreamOut`指针。
 
-
+```c++
+ssize_t AudioStreamOut::write(const void *buffer, size_t numBytes)
+{
+    size_t bytesWritten;
+    status_t result = stream->write(buffer, numBytes, &bytesWritten);
+    if (result == OK && bytesWritten > 0 && mHalFrameSize > 0) {
+        mFramesWritten += bytesWritten / mHalFrameSize;
+    }
+    return result == OK ? bytesWritten : result;
+}
+```
 
 ## audioflinger::createTrack
 
-​	在前面的章节中，openOutput`在audioFlinger`初始化后，进行了HAL层的初始化，并且初始化了其主要的结构体：playback或capture。但playbackThread或者caputureThread的主要操作对象均为track。
+​	在前面的章节中，openOutput`在audioFlinger`初始化后，进行了HAL层的初始化，并且初始化了其主要的结构体：playback或capture。但playbackThread或者caputureThread的主要操作对象均为track。由于c或capture的操作互为镜像，此处仅分析`AudioFlinger::addTrack`的调用流程，`AudioFlinger::addRecord`同理可以分析。
+
+```c
+sp<IAudioTrack> AudioFlinger::createTrack(const CreateTrackInput& input,
+                                          CreateTrackOutput& output,
+                                          status_t *status)
+{
+    sp<PlaybackThread::Track> track;
+    sp<TrackHandle> trackHandle;
+    sp<Client> client;
+    status_t lStatus;
+    audio_stream_type_t streamType;
+    audio_port_handle_t portId = AUDIO_PORT_HANDLE_NONE;
+
+    bool updatePid = (input.clientInfo.clientPid == -1);
+    const uid_t callingUid = IPCThreadState::self()->getCallingUid();
+    uid_t clientUid = input.clientInfo.clientUid;
+    if (!isTrustedCallingUid(callingUid)) {
+        ALOGW_IF(clientUid != callingUid,
+                "%s uid %d tried to pass itself off as %d",
+                __FUNCTION__, callingUid, clientUid);
+        clientUid = callingUid;
+        updatePid = true;
+    }
+    pid_t clientPid = input.clientInfo.clientPid;
+    if (updatePid) {
+        const pid_t callingPid = IPCThreadState::self()->getCallingPid();
+        ALOGW_IF(clientPid != -1 && clientPid != callingPid,
+                 "%s uid %d pid %d tried to pass itself off as pid %d",
+                 __func__, callingUid, callingPid, clientPid);
+        clientPid = callingPid;
+    }
+
+    audio_session_t sessionId = input.sessionId;
+    if (sessionId == AUDIO_SESSION_ALLOCATE) {
+        sessionId = (audio_session_t) newAudioUniqueId(AUDIO_UNIQUE_ID_USE_SESSION);
+    } else if (audio_unique_id_get_use(sessionId) != AUDIO_UNIQUE_ID_USE_SESSION) {
+        lStatus = BAD_VALUE;
+        goto Exit;
+    }
+
+    output.sessionId = sessionId;
+    output.outputId = AUDIO_IO_HANDLE_NONE;
+    output.selectedDeviceId = input.selectedDeviceId;
+
+    // 1. 从audio_policy_config 中获取设置参数
+    lStatus = AudioSystem::getOutputForAttr(&input.attr, &output.outputId, sessionId, &streamType,
+                                            clientPid, clientUid, &input.config, input.flags,
+                                            &output.selectedDeviceId, &portId);
+
+    if (lStatus != NO_ERROR || output.outputId == AUDIO_IO_HANDLE_NONE) {
+        ALOGE("createTrack() getOutputForAttr() return error %d or invalid output handle", lStatus);
+        goto Exit;
+    }
+
+    if (uint32_t(streamType) >= AUDIO_STREAM_CNT) {
+        ALOGE("createTrack() invalid stream type %d", streamType);
+        lStatus = BAD_VALUE;
+        goto Exit;
+    }
+
+    if (!audio_is_output_channel(input.config.channel_mask)) {
+        ALOGE("createTrack() invalid channel mask %#x", input.config.channel_mask);
+        lStatus = BAD_VALUE;
+        goto Exit;
+    }
+
+    if (!audio_is_valid_format(input.config.format)) {
+        ALOGE("createTrack() invalid format %#x", input.config.format);
+        lStatus = BAD_VALUE;
+        goto Exit;
+    }
+
+    {
+        Mutex::Autolock _l(mLock);
+        // 2.获得全局playback 线程
+        PlaybackThread *thread = checkPlaybackThread_l(output.outputId); 
+        if (thread == NULL) {
+            ALOGE("no playback thread found for output handle %d", output.outputId);
+            lStatus = BAD_VALUE;
+            goto Exit;
+        }
+
+        client = registerPid(clientPid);
+
+        PlaybackThread *effectThread = NULL;
+
+        for (size_t i = 0; i < mPlaybackThreads.size(); i++) {
+            sp<PlaybackThread> t = mPlaybackThreads.valueAt(i);
+            if (mPlaybackThreads.keyAt(i) != output.outputId) {
+                uint32_t sessions = t->hasAudioSession(sessionId);
+                if (sessions & ThreadBase::EFFECT_SESSION) {
+                    effectThread = t.get();
+                    break;
+                }
+            }
+        }
+        ALOGV("createTrack() sessionId: %d", sessionId);
+
+        output.sampleRate = input.config.sample_rate;
+        output.frameCount = input.frameCount;
+        output.notificationFrameCount = input.notificationFrameCount;
+        output.flags = input.flags;
+
+        // 3.创建重放track
+        track = thread->createTrack_l(client, streamType, input.attr, &output.sampleRate,
+                                      input.config.format, input.config.channel_mask,
+                                      &output.frameCount, &output.notificationFrameCount,
+                                      input.notificationsPerBuffer, input.speed,
+                                      input.sharedBuffer, sessionId, &output.flags,
+                                      input.clientInfo.clientTid, clientUid, &lStatus, portId);
+        LOG_ALWAYS_FATAL_IF((lStatus == NO_ERROR) && (track == 0));
+
+        output.afFrameCount = thread->frameCount();
+        output.afSampleRate = thread->sampleRate();
+        output.afLatencyMs = thread->latency();
+
+ 
+        if (lStatus == NO_ERROR && effectThread != NULL) {
+            Mutex::Autolock _dl(thread->mLock);
+            Mutex::Autolock _sl(effectThread->mLock);
+            moveEffectChain_l(sessionId, effectThread, thread, true);
+        }
+
+        for (size_t i = 0; i < mPendingSyncEvents.size(); i++) {
+            if (mPendingSyncEvents[i]->triggerSession() == sessionId) {
+                if (thread->isValidSyncEvent(mPendingSyncEvents[i])) {
+                    if (lStatus == NO_ERROR) {
+                        (void) track->setSyncEvent(mPendingSyncEvents[i]);
+                    } else {
+                        mPendingSyncEvents[i]->cancel();
+                    }
+                    mPendingSyncEvents.removeAt(i);
+                    i--;
+                }
+            }
+        }
+
+        setAudioHwSyncForSession_l(thread, sessionId);
+    }
+
+    if (lStatus != NO_ERROR) {
+  
+            Mutex::Autolock _cl(mClientLock);
+            client.clear();
+        }
+        track.clear();
+        goto Exit;
+    }
+
+	// 4.创建 track 句柄
+    trackHandle = new TrackHandle(track);
+
+Exit:
+    if (lStatus != NO_ERROR && output.outputId != AUDIO_IO_HANDLE_NONE) {
+        AudioSystem::releaseOutput(output.outputId, streamType, sessionId);
+    }
+    *status = lStatus;
+    return trackHandle;
+}
+```
+
+上述代码主要进行了如下所述四个步骤，上述代码虽然看似只创建了一个track对象并且返回了其句柄，但实际上多个步骤具有side effect：
+
+- 从audio_policy_config 中获取设置参数
+  - 此步骤会在audio policy中搜索合适的参数，传入的构造参数仅为参考，会根据此步骤函数调用进行建议的修改（所以有时，设置8通道采集时，在此步将被强制修改回2通道）
+- 获得全局playback 线程
+- 创建重放track
+  - 这里在返回track实例前，会将其放入到playback线程的对象中。后续在thread loop中不停的播放所有track对象的混音。
+- 创建 track 句柄
+
