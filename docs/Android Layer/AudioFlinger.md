@@ -1,18 +1,18 @@
 # AudioFlinger
 
-​	`Audio Flinger Service`与`Audio Policy Service`是android audio的基石，作为`Media Server`的一部分，AF与AP对下调用Audio HAL层，完成对硬件的访问，对上，通过Binder IPC给Native Framework提供接口。在`Media Server`层，AF与APolicy虽然解耦，但是对于audio这个功能而言，却还是需要两个组件共同作用才能完成。此小章主要介绍AF。
+​	`Audio Flinger Service`与`Audio Policy Service`是android audio的基石，作为`Media Server`的一部分，`AF`与`AP`对下调用`Audio HAL`层，完成对硬件的访问，对上，通过Binder IPC给Native Framework提供接口。在`Media Server`层，`AF`与`AP`虽然解耦，但是对于audio这个功能而言，却还是需要两个组件共同作用才能完成。此小章主要介绍`AF`。
 
 ## audioflinger
 
 `audioflinger`为android framework的一部分，文件位于源码`/framework/services/audioflinger`中，主要包括：
 
-- AudioFlinger.cpp（audio flinger的主文件）
-- Threads.cpp (audio flinger主要最终需要创建一个个回放或采集的子线程)
-- Tracks.cpp (audio flinger主要针对的结构体对象)
+- AudioFlinger.cpp（ `AF`的主文件）
+- Threads.cpp ( `AF`主要最终需要创建回放或采集的子线程)
+- Tracks.cpp ( `AF`创建的回放、采集线程的主要操作对象)
 
 在`Android P` 的audioflinger源码文件夹中，已经将`AudioStreamOut`分离为单独的文件头与cpp文件，而AudioStreamIn仍然在audioflinger的文件中。在可以预见的将来，Android 必然将AudioStreamIn也同样分离出来。
 
-### AudioFlinger
+### AudioFlinger继承关系
 
 ​	AudioFlinger作为android底层server组件，通过binder为client组件提供访问，AudioFlinge公有继承自`BnAudioFlinger`与`BinderService`，其中`BinderService`为模版类。
 
@@ -72,7 +72,7 @@ private:
 };
 ```
 
-​	AudioFlinger的类图如下所示，由于AudioFlinger继承自BinderService，所以在调用publish函数时，将在servicemanager中创建名为audioflinger的系统服务。
+AudioFlinger的类图如下所示，由于AudioFlinger继承自BinderService，所以在调用publish函数时，将在servicemanager中创建名为audioflinger的系统服务。
 
 ```mermaid
 classDiagram
